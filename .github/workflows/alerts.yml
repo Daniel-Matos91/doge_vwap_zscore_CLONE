@@ -27,7 +27,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           # Proxy/params (opcionais — podem ser alterados em Settings → Variables se preferir)
           EXCHANGE_PREFERRED: bybit
           PROXY_BASE: https://dogeusdt.danielmatos-contatos.workes.dev
