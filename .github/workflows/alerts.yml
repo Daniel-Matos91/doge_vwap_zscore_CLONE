@@ -1,47 +1,25 @@
-name: DOGE 30m Signals
+name: run-signal
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # a cada 30 minutos
-  workflow_dispatch: {}       # permite rodar manualmente
+    - cron: "*/30 * * * *"  # roda a cada 30 min
+  workflow_dispatch:
 
 jobs:
-  run-signal:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run signal script
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: python alert.py
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Proxy/params (opcionais — podem ser alterados em Settings → Variables se preferir)
-          EXCHANGE_PREFERRED: bybit
-          PROXY_BASE: https://dogeusdt.danielmatos-contatos.workes.dev
-          PROXY_BASE_ALT: https://dogeusdt.danielmatos-contatos.workers.dev
           SYMBOL: DOGE/USDT:USDT
-          TIMEFRAME: 30m
-          LOCAL_TZ: Europe/Lisbon
-          HOUR_WINDOW: all
+          INTERVAL: 30m
           Z_ENTRY: "1.0"
-          VOL_SPIKE_MULT: "1.5"
           TP_MULT: "2.0"
-          Z_LOOKBACK: "80"
-          VOL_LOOKBACK: "40"
-          HISTORY_BARS: "500"
-          FEE_PER_SIDE: "0.0005"
-          SLIPPAGE_PER_SIDE: "0.0002"
-        run: |
-          python alert.py
