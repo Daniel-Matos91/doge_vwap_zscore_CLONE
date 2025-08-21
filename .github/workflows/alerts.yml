@@ -17,7 +17,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python alert.py
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SYMBOL: DOGE/USDT:USDT
           INTERVAL: 30m
