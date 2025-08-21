@@ -9,7 +9,7 @@ def send_telegram(message: str):
         print("[WARN] TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID não configurados.")
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     resp = requests.post(url, json=payload)
     if resp.status_code != 200:
