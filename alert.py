@@ -59,3 +59,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+from telegram_utils import send_telegram
+send_telegram("🚀 Teste: Workflow rodou com sucesso!")
+
