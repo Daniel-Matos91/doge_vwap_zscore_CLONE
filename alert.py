@@ -43,19 +43,37 @@ price = last["c"]
 zscore = last["zscore"]
 
 signal = None
+entry, tp, sl = None, None, None
+
 if zscore >= Z_ENTRY:
     signal = "LONG"
     entry = price
-    tp = entry * (1 + (TP_MULT * (zscore / 100)))  # baseado no múltiplo do Z
+    tp = entry * (1 + (TP_MULT * (zscore / 100)))
     sl = entry * (1 - (1.0 * (zscore / 100)))
+
 elif zscore <= -Z_ENTRY:
     signal = "SHORT"
     entry = price
     tp = entry * (1 - (TP_MULT * (abs(zscore) / 100)))
     sl = entry * (1 + (1.0 * (abs(zscore) / 100)))
 
+else:
+    signal = "HOLD"
+
 # ===== Telegram =====
-if signal:
+if signal == "HOLD":
+    # Envia "HOLD" só se você quiser ver — senão pode comentar essa parte
+    msg = (
+        f"⏸ *HOLD Detected*\n"
+        f"Par: `{SYMBOL}`\n"
+        f"Preço atual: `{price:.5f}`\n"
+        f"Z-Score: `{zscore:.2f}`\n"
+        f"Hora: {last['dt'].strftime('%Y-%m-%d %H:%M UTC')}"
+    )
+    print("[INFO] Sinal = HOLD")
+    send_telegram(msg)
+
+elif signal in ["LONG", "SHORT"]:
     msg = (
         f"📊 *Sinal Detectado*\n"
         f"Par: `{SYMBOL}`\n"
@@ -63,11 +81,11 @@ if signal:
         f"Entrada: `{entry:.5f}`\n"
         f"TP: `{tp:.5f}`\n"
         f"SL: `{sl:.5f}`\n"
+        f"Z-Score: `{zscore:.2f}`\n"
         f"Hora: {last['dt'].strftime('%Y-%m-%d %H:%M UTC')}"
     )
     print("[INFO] Sinal gerado, enviando para Telegram...")
     send_telegram(msg)
 else:
-    print(f"[INFO] Nenhum sinal @ {last['dt']}")
-
+    print("[INFO] Nenhum sinal calculado.")
 
