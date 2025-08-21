@@ -1,91 +1,116 @@
+# alert.py
 import os
 import ccxt
 import pandas as pd
-import numpy as np
-from datetime import datetime, timezone
 from telegram_utils import send_telegram
 
 # ===== Config =====
-SYMBOL       = os.getenv("SYMBOL", "DOGE/USDT:USDT")
-INTERVAL     = os.getenv("INTERVAL", "30m")
-LIMIT        = int(os.getenv("LIMIT", "500"))
-EXCHANGE     = os.getenv("EXCHANGE", "okx")
-Z_ENTRY      = float(os.getenv("Z_ENTRY", "1.0"))
-TP_MULT      = float(os.getenv("TP_MULT", "2.0"))
+SYMBOL        = os.getenv("SYMBOL", "DOGE/USDT:USDT")
+INTERVAL      = os.getenv("INTERVAL", "30m")
+LIMIT         = int(os.getenv("LIMIT", "500"))
+EXCHANGE      = os.getenv("EXCHANGE", "okx")  # "okx" ou "bybit"
+LOCAL_TZ      = os.getenv("LOCAL_TZ", "Europe/Lisbon")
 
-# ===== Exchange =====
-if EXCHANGE == "okx":
-    exchange = ccxt.okx()
-else:
-    exchange = ccxt.binance()
+# Parâmetros (alinhados com o que validamos)
+Z_ENTRY       = float(os.getenv("Z_ENTRY", "1.0"))
+TP_MULT       = float(os.getenv("TP_MULT", "2.0"))
+Z_LOOKBACK    = int(os.getenv("Z_LOOKBACK", "80"))
 
-print(f"[INFO] Connected to {exchange.id.upper()} | symbol={SYMBOL} | timeframe={INTERVAL}")
+def connect_exchange(name: str):
+    name = name.lower()
+    if name == "okx":
+        ex = ccxt.okx({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+    elif name == "bybit":
+        ex = ccxt.bybit({"enableRateLimit": True, "options": {"defaultType": "swap", "defaultSubType": "linear"}})
+    else:
+        ex = ccxt.okx({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+    ex.load_markets()
+    return ex
 
-# ===== Funções =====
-def fetch_ohlcv(symbol, interval, limit):
-    data = exchange.fetch_ohlcv(symbol, interval, limit=limit)
-    df = pd.DataFrame(data, columns=["ts","o","h","l","c","v"])
-    df["dt"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+def fetch_ohlcv(ex, symbol, interval, limit):
+    rows = ex.fetch_ohlcv(symbol, interval, limit=limit)
+    df = pd.DataFrame(rows, columns=["ts","o","h","l","c","v"])
+    df["dt_utc"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+    df["dt_local"] = df["dt_utc"].dt.tz_convert(LOCAL_TZ)
     return df
 
-def compute_vwap_z(df, lookback=120):
-    df["tp"] = (df["h"] + df["l"] + df["c"]) / 3
-    df["vwap"] = (df["tp"] * df["v"]).cumsum() / df["v"].cumsum()
-    df["zscore"] = (df["c"] - df["c"].rolling(lookback).mean()) / df["c"].rolling(lookback).std()
-    return df
+def compute_vwap_and_z(df: pd.DataFrame, z_lb: int) -> pd.DataFrame:
+    d = df.copy()
+    # VWAP intradiário simples (acumulado, aproximado para alertas)
+    d["tp"] = (d["h"] + d["l"] + d["c"]) / 3.0
+    d["pv"] = d["tp"] * d["v"]
+    d["vwap"] = (d["pv"].cumsum() / d["v"].cumsum())
+    # Z-score do close
+    d["z"] = (d["c"] - d["c"].rolling(z_lb).mean()) / d["c"].rolling(z_lb).std()
+    d = d.dropna()
+    return d
 
-# ===== Estratégia =====
-df = fetch_ohlcv(SYMBOL, INTERVAL, LIMIT)
-df = compute_vwap_z(df)
+def main():
+    ex = connect_exchange(EXCHANGE)
+    print(f"[INFO] Connected to {ex.id.upper()} | symbol={SYMBOL} | timeframe={INTERVAL}")
 
-last = df.iloc[-1]
-price = last["c"]
-zscore = last["zscore"]
+    df = fetch_ohlcv(ex, SYMBOL, INTERVAL, LIMIT)
+    if df.empty or len(df) < max(50, Z_LOOKBACK+5):
+        print("[WARN] Dados insuficientes.")
+        return
 
-signal = None
-entry, tp, sl = None, None, None
+    feat = compute_vwap_and_z(df, Z_LOOKBACK)
+    last = feat.iloc[-1]
+    price = float(last["c"])
+    vwap  = float(last["vwap"])
+    z     = float(last["z"])
+    tloc  = last["dt_local"].strftime("%Y-%m-%d %H:%M %Z")
 
-if zscore >= Z_ENTRY:
-    signal = "LONG"
-    entry = price
-    tp = entry * (1 + (TP_MULT * (zscore / 100)))
-    sl = entry * (1 - (1.0 * (zscore / 100)))
+    # Lógica de sinal: LONG / SHORT / HOLD
+    signal = None
+    entry = tp = sl = None
 
-elif zscore <= -Z_ENTRY:
-    signal = "SHORT"
-    entry = price
-    tp = entry * (1 - (TP_MULT * (abs(zscore) / 100)))
-    sl = entry * (1 + (1.0 * (abs(zscore) / 100)))
+    if z >= Z_ENTRY:
+        # Short quando z muito positivo
+        signal = "SHORT"
+        entry = price
+        # Distância por volatilidade estatística (proxy simples via desvio padrão de close)
+        # Mantém coerência com os testes: TP_MULT como múltiplo da "amplitude" estatística
+        dev = abs(price - vwap)
+        dist = dev if dev > 0 else price * 0.001  # fallback mínimo
+        tp = entry - TP_MULT * dist
+        sl = vwap
+    elif z <= -Z_ENTRY:
+        # Long quando z muito negativo
+        signal = "LONG"
+        entry = price
+        dev = abs(price - vwap)
+        dist = dev if dev > 0 else price * 0.001
+        tp = entry + TP_MULT * dist
+        sl = vwap
+    else:
+        signal = "HOLD"
 
-else:
-    signal = "HOLD"
+    if signal == "HOLD":
+        # Envia HOLD (você pediu receber no Telegram sempre)
+        msg = (
+            f"⚪ <b>HOLD</b> — {SYMBOL} {INTERVAL}\n"
+            f"• Preço: <code>{price:.6f}</code>\n"
+            f"• VWAP:  <code>{vwap:.6f}</code>\n"
+            f"• Z:     <code>{z:.2f}</code> (−{Z_ENTRY} … +{Z_ENTRY})\n"
+            f"• Horário: {tloc}"
+        )
+        send_telegram(msg)
+        print("[INFO] Sinal = HOLD")
+        return
 
-# ===== Telegram =====
-if signal == "HOLD":
-    # Envia "HOLD" só se você quiser ver — senão pode comentar essa parte
+    # Se for LONG/SHORT, envia com entrada/TP/SL
+    side_emoji = "🟢" if signal == "LONG" else "🔴"
     msg = (
-        f"⏸ *HOLD Detected*\n"
-        f"Par: `{SYMBOL}`\n"
-        f"Preço atual: `{price:.5f}`\n"
-        f"Z-Score: `{zscore:.2f}`\n"
-        f"Hora: {last['dt'].strftime('%Y-%m-%d %H:%M UTC')}"
+        f"{side_emoji} <b>SINAL {signal}</b> — {SYMBOL} {INTERVAL}\n"
+        f"• Entrada: <code>{entry:.6f}</code>\n"
+        f"• TP:      <code>{tp:.6f}</code>  (TP_MULT={TP_MULT})\n"
+        f"• SL:      <code>{sl:.6f}</code>  (VWAP)\n"
+        f"• Z:       <code>{z:.2f}</code>  (limiar={Z_ENTRY})\n"
+        f"• Horário: {tloc}"
     )
-    print("[INFO] Sinal = HOLD")
-    send_telegram(msg)
+    ok = send_telegram(msg)
+    print("[INFO]", "Alert OK" if ok else "Alert falhou")
 
-elif signal in ["LONG", "SHORT"]:
-    msg = (
-        f"📊 *Sinal Detectado*\n"
-        f"Par: `{SYMBOL}`\n"
-        f"Direção: *{signal}*\n"
-        f"Entrada: `{entry:.5f}`\n"
-        f"TP: `{tp:.5f}`\n"
-        f"SL: `{sl:.5f}`\n"
-        f"Z-Score: `{zscore:.2f}`\n"
-        f"Hora: {last['dt'].strftime('%Y-%m-%d %H:%M UTC')}"
-    )
-    print("[INFO] Sinal gerado, enviando para Telegram...")
-    send_telegram(msg)
-else:
-    print("[INFO] Nenhum sinal calculado.")
-
+if __name__ == "__main__":
+    main()
