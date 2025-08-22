@@ -11,7 +11,7 @@ LIMIT         = int(os.getenv("LIMIT", "500"))
 EXCHANGE      = os.getenv("EXCHANGE", "okx")  # "okx" ou "bybit"
 LOCAL_TZ      = os.getenv("LOCAL_TZ", "Europe/Lisbon")
 
-# Parâmetros (alinhados com o que validamos)
+# Parâmetros da estratégia (alinhados com os backtests)
 Z_ENTRY       = float(os.getenv("Z_ENTRY", "1.0"))
 TP_MULT       = float(os.getenv("TP_MULT", "2.0"))
 Z_LOOKBACK    = int(os.getenv("Z_LOOKBACK", "80"))
@@ -36,7 +36,7 @@ def fetch_ohlcv(ex, symbol, interval, limit):
 
 def compute_vwap_and_z(df: pd.DataFrame, z_lb: int) -> pd.DataFrame:
     d = df.copy()
-    # VWAP intradiário simples (acumulado, aproximado para alertas)
+    # VWAP acumulado simples
     d["tp"] = (d["h"] + d["l"] + d["c"]) / 3.0
     d["pv"] = d["tp"] * d["v"]
     d["vwap"] = (d["pv"].cumsum() / d["v"].cumsum())
@@ -61,33 +61,32 @@ def main():
     z     = float(last["z"])
     tloc  = last["dt_local"].strftime("%Y-%m-%d %H:%M %Z")
 
-    # Lógica de sinal: LONG / SHORT / HOLD
+    # ===== Estratégia / decisão =====
     signal = None
     entry = tp = sl = None
 
-    if z >= Z_ENTRY:
-        # Short quando z muito positivo
-        signal = "SHORT"
-        entry = price
-        # Distância por volatilidade estatística (proxy simples via desvio padrão de close)
-        # Mantém coerência com os testes: TP_MULT como múltiplo da "amplitude" estatística
-        dev = abs(price - vwap)
-        dist = dev if dev > 0 else price * 0.001  # fallback mínimo
-        tp = entry - TP_MULT * dist
-        sl = vwap
-    elif z <= -Z_ENTRY:
-        # Long quando z muito negativo
+    # distância de risco baseada no desvio até o VWAP
+    dist = abs(price - vwap)
+    if dist <= 0:
+        dist = max(price * 0.001, 1e-6)  # fallback mínimo
+
+    if z <= -Z_ENTRY:
+        # LONG: z-score muito negativo
         signal = "LONG"
         entry = price
-        dev = abs(price - vwap)
-        dist = dev if dev > 0 else price * 0.001
-        tp = entry + TP_MULT * dist
-        sl = vwap
+        sl = entry - dist               # SL sempre ABAIXO da entrada
+        tp = entry + TP_MULT * dist     # TP múltiplo do risco
+    elif z >= Z_ENTRY:
+        # SHORT: z-score muito positivo
+        signal = "SHORT"
+        entry = price
+        sl = entry + dist               # SL sempre ACIMA da entrada
+        tp = entry - TP_MULT * dist     # TP múltiplo do risco
     else:
         signal = "HOLD"
 
+    # ===== Envio =====
     if signal == "HOLD":
-        # Envia HOLD (você pediu receber no Telegram sempre)
         msg = (
             f"⚪ <b>HOLD</b> — {SYMBOL} {INTERVAL}\n"
             f"• Preço: <code>{price:.6f}</code>\n"
@@ -99,13 +98,17 @@ def main():
         print("[INFO] Sinal = HOLD")
         return
 
-    # Se for LONG/SHORT, envia com entrada/TP/SL
+    # Se for LONG/SHORT, calcula % de TP/SL
+    tp_pct = (tp - entry) / entry * 100.0
+    sl_pct = (sl - entry) / entry * 100.0
     side_emoji = "🟢" if signal == "LONG" else "🔴"
+
     msg = (
         f"{side_emoji} <b>SINAL {signal}</b> — {SYMBOL} {INTERVAL}\n"
         f"• Entrada: <code>{entry:.6f}</code>\n"
-        f"• TP:      <code>{tp:.6f}</code>  (TP_MULT={TP_MULT})\n"
-        f"• SL:      <code>{sl:.6f}</code>  (VWAP)\n"
+        f"• TP:      <code>{tp:.6f}</code>  ({tp_pct:+.2f}%)  [TP_MULT={TP_MULT}]\n"
+        f"• SL:      <code>{sl:.6f}</code>  ({sl_pct:+.2f}%)\n"
+        f"• VWAP:    <code>{vwap:.6f}</code>\n"
         f"• Z:       <code>{z:.2f}</code>  (limiar={Z_ENTRY})\n"
         f"• Horário: {tloc}"
     )
@@ -114,3 +117,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
